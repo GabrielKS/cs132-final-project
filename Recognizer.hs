@@ -6,37 +6,54 @@ import Debug.Trace
 import Data.Map (Map)
 import qualified Data.Map as Map
 
-type StateFn = Int -> [Token] -> (Int, Nonterm, [Token])
-data Nonterm = T | E | E' deriving (Eq, Ord, Show)
+-- Toggle debug printing
+-- dtrace = trace  -- On
+dtrace _ fun = fun  -- Off
 
-ts = getTokens "a+(b)"
+data Result = Accept | Reject String deriving Show  -- All happy families are alike...
+data Progress = Nopop | Pop Int Nonterm | End Result deriving Show  -- The various messages states need to pass up the chain
+type StateFn = Progress -> [Token] -> (Progress, [Token])  -- States are of this type
+data Nonterm = T | E | E' deriving (Eq, Ord, Show)  -- Nonterminals for the grammar
 
-recognize = state0 0
+ts = getTokens "a+(b)"  -- Test string
 
-printVars nToPop nt restTokens statename = trace ("\tnToPop=" ++ show nToPop ++ ", nt=" ++ show nt ++ ", state=" ++ show statename)
-printStateStart statename tokens = trace ("state=" ++ show statename ++ ", tokens=" ++ show tokens)
+recognize :: [Token] -> Result  -- The main function of import (no pun intended). Call it with some tokens and it tells you whether you have a string in the language.
+recognize tokens = case state0 Nopop tokens of
+    (End res, remnants) -> dtrace (show remnants) res
+    (_, remnants) -> Reject $ "Exited parser with remaining tokens " ++ show remnants 
 
+-- Some debug helper functions
+printVars nToPop nt restTokens statename = dtrace ("\tnToPop=" ++ show nToPop ++ ", nt=" ++ show nt ++ ", state=" ++ show statename)
+printStateStart statename tokens = dtrace ("state=" ++ show statename ++ ", tokens=" ++ show tokens)
+
+-- All shift states are of this form
 shiftConstructor :: String -> (Token -> Maybe StateFn) -> (Nonterm -> Maybe StateFn) -> StateFn
-shiftConstructor statename _ _ _ [] = error $ "Empty input to shift state " ++ statename
-shiftConstructor statename actionmap gotomap pToPop tokens@(h:t) = printStateStart statename tokens $ 
+shiftConstructor _ _ _ (End res) tokens = (End res, tokens)
+shiftConstructor statename _ _ _ [] = (End (Reject ("Empty input to shift state " ++ statename)), [])
+shiftConstructor statename actionmap gotomap _ tokens@(h:t) = printStateStart statename tokens $ 
     let
-        (nToPop, initNt, restTokens) = case actionmap h of
-            Nothing -> error $ "No match for terminal " ++ show h ++ " in state " ++ statename
-            Just f -> f 0 t
+        (prog, restTokens) = case actionmap h of
+            Nothing -> (End (Reject ("No match for terminal " ++ show h ++ " in state " ++ statename)), tokens)
+            Just f -> f Nopop t
     in
-    handleGoto statename gotomap (nToPop, initNt, restTokens)
+    handleGoto statename gotomap (prog, restTokens)
 
-handleGoto :: String -> (Nonterm -> Maybe StateFn) -> (Int, Nonterm, [Token]) -> (Int, Nonterm, [Token])
-handleGoto statename gotomap (nToPop, nt, restTokens) = printVars nToPop nt restTokens statename $
+-- Helper function to handle the recursion involved in goto-ing
+handleGoto :: String -> (Nonterm -> Maybe StateFn) -> (Progress, [Token]) -> (Progress, [Token])
+handleGoto _ _ (End res, tokens) = (End res, tokens)
+handleGoto _ _ (Nopop, tokens) = error $ "Malformed parser; should not be encountering a Nopop here. Tokens = " ++ show tokens
+handleGoto statename gotomap (Pop nToPop nt, restTokens) = printVars nToPop nt restTokens statename $
             if nToPop > 0 then
-                (nToPop-1, nt, restTokens)
+                (Pop (nToPop-1) nt, restTokens)
             else
                 case gotomap nt of
-                    Nothing -> error $ "No match for non-terminal " ++ show nt ++ " in state " ++ statename
-                    Just f -> handleGoto statename gotomap (f 0 restTokens)
+                    Nothing -> (End (Reject ("No match for non-terminal " ++ show nt ++ " in state " ++ statename)), restTokens)
+                    Just f -> handleGoto statename gotomap (f Nopop restTokens)
 
+-- All reduce states are of this form
 reduceConstructor :: String -> Nonterm -> Int -> StateFn
-reduceConstructor statename nt nToPop _ tokens = printStateStart statename tokens (nToPop-1, nt, tokens)
+reduceConstructor _ _ _ (End res) tokens = (End res, tokens)
+reduceConstructor statename nt nToPop _ tokens = printStateStart statename tokens (Pop (nToPop-1) nt, tokens)
 
 state0 :: StateFn
 state0 = shiftConstructor "0"
@@ -50,7 +67,7 @@ state1 :: StateFn
 state1 = shiftConstructor "1"
     (\case
         TPlus -> Just state5
-        TEnd  -> Just state0  -- TODO accept
+        TEnd  -> Just (\_ tokens -> (End Accept, tokens))  -- Function that tells shiftConstructor to accept
         _ -> Nothing)
     (const Nothing)
 
