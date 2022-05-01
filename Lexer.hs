@@ -1,8 +1,8 @@
-module Lexer where
+module Lexer(getTokens) where
 import Language
 
 getTokens :: String -> [Token]
-getTokens "" = []
+getTokens "" = [TEnd]
 getTokens s@(h:t)
     | h == '(' = TLParen : getTokens t
     | h == ')' = TRParen : getTokens t

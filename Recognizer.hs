@@ -1,86 +1,91 @@
+{-# LANGUAGE LambdaCase #-}
 module Recognizer(recognize) where
 import Language
 import Lexer
 import Debug.Trace
+import Data.Map (Map)
+import qualified Data.Map as Map
+
+type StateFn = Int -> [Token] -> (Int, Nonterm, [Token])
+data Nonterm = T | E | E' deriving (Eq, Ord, Show)
+
 ts = getTokens "a+(b)"
 
-type StateFn = [Token] -> (Nonterm, [Token])
-data Nonterm = T | E | E' deriving (Show, Eq)
+recognize = state0 0
 
-recognize :: [Token] -> Bool
-recognize tokens = let (nt, rest) = recognize_s0 tokens in (nt == E' && null rest)
+printVars nToPop nt restTokens statename = trace ("\tnToPop=" ++ show nToPop ++ ", nt=" ++ show nt ++ ", state=" ++ show statename)
+printStateStart statename tokens = trace ("state=" ++ show statename ++ ", tokens=" ++ show tokens)
 
-recurseGotomap :: (Nonterm -> StateFn) -> Nonterm -> [Token] -> (Nonterm, [Token])
-recurseGotomap gotomap initialNonterm initialTokens =
-    let (newNonterm, newTokens) = gotomap initialNonterm initialTokens in
-        recurseGotomap gotomap newNonterm newTokens
+shiftConstructor :: String -> (Token -> Maybe StateFn) -> (Nonterm -> Maybe StateFn) -> StateFn
+shiftConstructor statename _ _ _ [] = error $ "Empty input to shift state " ++ statename
+shiftConstructor statename actionmap gotomap pToPop tokens@(h:t) = printStateStart statename tokens $ 
+    let
+        (nToPop, initNt, restTokens) = case actionmap h of
+            Nothing -> error $ "No match for terminal " ++ show h ++ " in state " ++ statename
+            Just f -> f 0 t
+    in
+    handleGoto statename gotomap (nToPop, initNt, restTokens)
 
-chain :: (Token -> StateFn) -> (Nonterm -> StateFn) -> [Token] -> (Nonterm, [Token])
-chain _ _ [] = error "Empty input to chain"
-chain actionmap gotomap tokens@(h:t) = let (recognized, rest) = actionmap h t in recurseGotomap gotomap recognized rest
+handleGoto :: String -> (Nonterm -> Maybe StateFn) -> (Int, Nonterm, [Token]) -> (Int, Nonterm, [Token])
+handleGoto statename gotomap (nToPop, nt, restTokens) = printVars nToPop nt restTokens statename $
+            if nToPop > 0 then
+                (nToPop-1, nt, restTokens)
+            else
+                case gotomap nt of
+                    Nothing -> error $ "No match for non-terminal " ++ show nt ++ " in state " ++ statename
+                    Just f -> handleGoto statename gotomap (f 0 restTokens)
 
-recognize_s0 :: StateFn
-recognize_s0 [] = error "Empty input to recognize_s0"
-recognize_s0 tokens@(h:t) = trace "s0" $ chain actionmap gotomap tokens
-    where
-        actionmap h = case h of
-            TIdent _ -> recognize_s4
-            TLParen  -> recognize_s3
-            _ -> error "Error in shift s0"
-        gotomap nt = case nt of
-            E -> recognize_s1
-            T -> recognize_s2
-            _ -> error "Error in goto s0"
+reduceConstructor :: String -> Nonterm -> Int -> StateFn
+reduceConstructor statename nt nToPop _ tokens = printStateStart statename tokens (nToPop-1, nt, tokens)
 
-recognize_s1 :: StateFn
-recognize_s1 [] = error "Empty input to recognize_s1"
-recognize_s1 tokens@(h:t) = trace "s1" $ 
-    case h of
-        TPlus -> recognize_s5 t
-        TEnd -> (E', [])
-        _ -> error "Error in recognize_s1"
+state0 :: StateFn
+state0 = shiftConstructor "0"
+    (\case
+        TIdent _ -> Just state4
+        TLParen  -> Just state3
+        _ -> Nothing)
+    (\elem -> Map.lookup elem (Map.fromList [(E, state1), (T, state2)]))
+    
+state1 :: StateFn
+state1 = shiftConstructor "1"
+    (\case
+        TPlus -> Just state5
+        TEnd  -> Just state0  -- TODO accept
+        _ -> Nothing)
+    (const Nothing)
 
-recognize_s2 :: StateFn
-recognize_s2 tokens = trace "s2" $ (E, tokens)
+state2 :: StateFn
+state2 = reduceConstructor "2" E 1
 
-recognize_s3 :: StateFn
-recognize_s3 [] = error "Empty input to recognize_s3"
-recognize_s3 tokens@(h:t) = trace "s3" $ chain shift goto t
-    where
-        shift h = case h of
-            TIdent _ -> recognize_s4
-            TLParen  -> recognize_s3
-            _ -> error "Error in shift s3"
-        goto nt = case nt of
-            E -> recognize_s6
-            T -> recognize_s2
-            _ -> error "Error in goto s3"
+state3 :: StateFn
+state3 = shiftConstructor "3"
+    (\case
+        TIdent _ -> Just state4
+        TLParen  -> Just state3
+        _ -> Nothing)
+    (\elem -> Map.lookup elem (Map.fromList [(E, state6), (T, state2)]))
 
-recognize_s4 :: StateFn
-recognize_s4 tokens = trace "s4" $ (T, tokens)
+state4 :: StateFn
+state4 = reduceConstructor "4" T 1
 
-recognize_s5 :: StateFn
-recognize_s5 [] = error "Empty input to recognize_s5"
-recognize_s5 tokens@(h:t) = trace "s5" $ chain shift goto t
-    where
-        shift h = case h of
-            TIdent _ -> recognize_s4
-            TLParen  -> recognize_s3
-            _ -> error "Error in shift s5"
-        goto nt = case nt of
-            T -> recognize_s8
-            _ -> error "Error in goto s5"
+state5 :: StateFn
+state5 = shiftConstructor "5"
+    (\case
+        TIdent _ -> Just state4
+        TLParen  -> Just state3
+        _ -> Nothing)
+    (\elem -> Map.lookup elem (Map.fromList [(T, state8)]))
 
-recognize_s6 :: StateFn
-recognize_s6 [] = error "Empty input to recognize_s6"
-recognize_s6 tokens@(h:t) = trace "s6" $ 
-    case h of
-        TPlus -> recognize_s5 t
-        TRParen -> recognize_s7 t
-        _ -> error "Error in recognize_s6"
+state6 :: StateFn
+state6 = shiftConstructor "6"
+    (\case
+        TPlus   -> Just state5
+        TRParen -> Just state7
+        _ -> Nothing)
+    (const Nothing)
 
-recognize_s7 :: StateFn
-recognize_s7 tokens = trace "s7" $ (T, tokens)
+state7 :: StateFn
+state7 = reduceConstructor "7" T 3
 
-recognize_s8 :: StateFn
-recognize_s8 tokens = trace "s7" $ (E, tokens)
+state8 :: StateFn
+state8 = reduceConstructor "8" E 3
