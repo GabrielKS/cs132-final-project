@@ -15,16 +15,6 @@ data Progress = Nopop | Pop Int Nonterm | End Result deriving Show  -- The vario
 type StateFn = Progress -> [Token] -> [Token] -> [Production] -> (Progress, [Token], [Token], [Production])  -- States are of this type
 data Element = ET Token | ENT Nonterm deriving Show
 type Production = (Nonterm, [Element])
-productions :: [[Token] -> Production]
-productions = [
-    const (E', [ENT E]),
-    const (E, [ENT E, ET TPlus, ENT T]),
-    const (E, [ENT T]),
-    const (T, [ET TLParen, ENT E, ET TRParen]),
-    \case
-        (TIdent s) : _ -> (T, [ET (TIdent s)])
-        _ -> error "Malformed parser; should be encountering a TIdent here"
-    ]
 
 ts = getTokens "a+(b)"  -- Test string
 
@@ -65,9 +55,11 @@ handleGoto statename gotomap (Pop nToPop nt, restTokens, done, theParse) = print
                     Just f -> handleGoto statename gotomap (f Nopop restTokens done theParse)
 
 -- All reduce states are of this form
-reduceConstructor :: String -> Nonterm -> Int -> ([Token] -> Production) -> StateFn
-reduceConstructor _ _ _ _ (End res) tokens done theParse = (End res, tokens, done, theParse)
-reduceConstructor statename nt nToPop myProduction _ tokens done theParse = printStateStart statename tokens (Pop (nToPop-1) nt, tokens, done, myProduction done : theParse)
+reduceConstructor :: String -> ([Token] -> Production) -> StateFn
+reduceConstructor _ _ (End res) tokens done theParse = (End res, tokens, done, theParse)
+reduceConstructor statename prodmap _ tokens done theParse =
+    let prod@(src, dest) = prodmap done in
+    printStateStart statename tokens (Pop (length dest - 1) src, tokens, done, prod : theParse)
 
 state0 :: StateFn
 state0 = shiftConstructor "0"
@@ -86,7 +78,7 @@ state1 = shiftConstructor "1"
     (const Nothing)
 
 state2 :: StateFn
-state2 = reduceConstructor "2" E 1 (productions !! 2)
+state2 = reduceConstructor "2" (const (E, [ENT T]))
 
 state3 :: StateFn
 state3 = shiftConstructor "3"
@@ -97,7 +89,9 @@ state3 = shiftConstructor "3"
     (\elem -> Map.lookup elem (Map.fromList [(E, state6), (T, state2)]))
 
 state4 :: StateFn
-state4 = reduceConstructor "4" T 1 (productions !! 4)
+state4 = reduceConstructor "4" (\case
+        (TIdent s) : _ -> (T, [ET (TIdent s)])
+        _ -> error "Malformed parser; should be encountering a TIdent here")
 
 state5 :: StateFn
 state5 = shiftConstructor "5"
@@ -116,7 +110,7 @@ state6 = shiftConstructor "6"
     (const Nothing)
 
 state7 :: StateFn
-state7 = reduceConstructor "7" T 3 (productions !! 3)
+state7 = reduceConstructor "7" (const (T, [ET TLParen, ENT E, ET TRParen]))
 
 state8 :: StateFn
-state8 = reduceConstructor "8" E 3 (productions !! 1)
+state8 = reduceConstructor "8" (const (E, [ENT E, ET TPlus, ENT T]))

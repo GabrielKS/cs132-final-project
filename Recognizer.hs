@@ -13,7 +13,6 @@ dtrace _ fun = fun  -- Off
 data Result = Accept | Reject String deriving Show  -- All happy families are alike...
 data Progress = Nopop | Pop Int Nonterm | End Result deriving Show  -- The various messages states need to pass up the chain
 type StateFn = Progress -> [Token] -> (Progress, [Token])  -- States are of this type
-data Nonterm = T | E | E' deriving (Eq, Ord, Show)  -- Nonterminals for the grammar
 
 ts = getTokens "a+(b)"  -- Test string
 
