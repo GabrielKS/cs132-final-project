@@ -13,7 +13,8 @@ dtrace _ fun = fun  -- Off
 data ParseResult = Success Expr | Failure String deriving Show  -- Either succeed and provide an AST or fail and tell us why
 data RecognizeResult = Accept | Reject String deriving Show  -- ...each unhappy family is unhappy in its own way
 data Progress = Nopop | Pop Int Nonterm | End RecognizeResult deriving Show  -- The various messages states need to pass up the chain
-type StateFn = Progress -> [Token] -> [Token] -> [Production] -> (Progress, [Token], [Token], [Production])  -- States are of this type
+type StateTup = (Progress, [Token], [Token], [Production])  -- All the information we need to keep track of the state: message, tokens remaining, tokens consumed, productions generated
+type StateFn = StateTup -> StateTup  -- States are of this type
 data Element = ET Token | ENT Nonterm deriving Show  -- An element of the grammar is either a terminal or a non-terminal
 type Production = (Nonterm, [Element])  -- Production rules are of this type
 
@@ -21,6 +22,7 @@ type Production = (Nonterm, [Element])  -- Production rules are of this type
 ts1 = getTokens "a+(b)"
 ts2 = getTokens "a+(b+c)"
 ts3 = getTokens "(a+b)+c"
+ts4 = getTokens "a+b+c+d"
 
 -- Shortcuts to lex and parse/recognize at the same time
 parseStr :: String -> ParseResult
@@ -30,10 +32,10 @@ recognizeStr = recognize . getTokens
 
 -- Given tokens, either parse them into an AST or provide an error message
 parse :: [Token] -> ParseResult
-parse tokens = case state0 Nopop tokens [] [] of
+parse tokens = case state0 (Nopop, tokens, [], []) of
     (End Accept, _, _, productions) -> Success (productionsToAST productions)
-    (End (Reject s), remnants, done, theParse) -> Failure s
-    (_, remnants, done, theParse) -> Failure $ "Exited parser with remaining tokens " ++ show remnants ++ " and parse " ++ show theParse
+    (End (Reject s), _, _, _) -> Failure s
+    (_, remnants, _, theParse) -> Failure $ "Exited parser with remaining tokens " ++ show remnants ++ " and parse " ++ show theParse
 
 -- Turn a rightmost derivation into an AST (in linear time)
 productionsToAST :: [Production] -> Expr
@@ -52,9 +54,9 @@ productionsToASTHelper (h:t) = productionsToASTHelper t
 
 -- Given tokens, either verify that they are a valid string in the language or provide an error message
 recognize :: [Token] -> RecognizeResult
-recognize tokens = case state0 Nopop tokens [] [] of
-    (End res, remnants, done, theParse) -> dtrace (show theParse) res
-    (_, remnants, done, theParse) -> Reject $ "Exited parser with remaining tokens " ++ show remnants ++ " and parse " ++ show theParse
+recognize tokens = case state0 (Nopop, tokens, [], []) of
+    (End res, _, _, theParse) -> dtrace (show theParse) res
+    (_, remnants, _, theParse) -> Reject $ "Exited parser with remaining tokens " ++ show remnants ++ " and parse " ++ show theParse
 
 -- Some debug helper functions
 printVars nToPop nt restTokens statename = dtrace ("\tnToPop=" ++ show nToPop ++ ", nt=" ++ show nt ++ ", state=" ++ show statename)
@@ -62,32 +64,32 @@ printStateStart statename tokens = dtrace ("state=" ++ show statename ++ ", toke
 
 -- All shift states are of this form
 shiftConstructor :: String -> (Token -> Maybe StateFn) -> (Nonterm -> Maybe StateFn) -> StateFn
-shiftConstructor _ _ _ (End res) tokens done theParse = (End res, tokens, done, theParse)
-shiftConstructor statename _ _ _ [] done theParse = (End (Reject ("Empty input to shift state " ++ statename)), [], done, theParse)
-shiftConstructor statename actionmap gotomap _ tokens@(h:t) done theParse = printStateStart statename tokens $ 
+shiftConstructor _ _ _ input@(End res, _, _, _) = input
+shiftConstructor statename _ _ (_, [], done, theParse) = (End (Reject ("Empty input to shift state " ++ statename)), [], done, theParse)
+shiftConstructor statename actionmap gotomap (_, tokens@(h:t), done, theParse) = printStateStart statename tokens $ 
     let
-        (prog, restTokens, newDone, newParse) = case actionmap h of
+        res = case actionmap h of
             Nothing -> (End (Reject ("No match for terminal " ++ show h ++ " in state " ++ statename)), tokens, done, theParse)
-            Just f -> f Nopop t (h:done) theParse
+            Just f -> f (Nopop, t, h:done, theParse)
     in
-    handleGoto statename gotomap (prog, restTokens, newDone, newParse)
+    handleGoto statename gotomap res
 
 -- Helper function to handle the recursion involved in goto-ing
-handleGoto :: String -> (Nonterm -> Maybe StateFn) -> (Progress, [Token], [Token], [Production]) -> (Progress, [Token], [Token], [Production])
-handleGoto _ _ (End res, tokens, done, theParse) = (End res, tokens, done, theParse)
-handleGoto _ _ (Nopop, tokens, done, theParse) = error $ "Malformed parser; should not be encountering a Nopop here. Tokens = " ++ show tokens
+handleGoto :: String -> (Nonterm -> Maybe StateFn) -> StateFn
+handleGoto _ _ input@(End res, _, _, _) = input
+handleGoto _ _ (Nopop, tokens, _, _) = error $ "Malformed parser; should not be encountering a Nopop here. Tokens = " ++ show tokens
 handleGoto statename gotomap (Pop nToPop nt, restTokens, done, theParse) = printVars nToPop nt restTokens statename $
             if nToPop > 0 then
                 (Pop (nToPop-1) nt, restTokens, done, theParse)
             else
                 case gotomap nt of
                     Nothing -> (End (Reject ("No match for non-terminal " ++ show nt ++ " in state " ++ statename)), restTokens, done, theParse)
-                    Just f -> handleGoto statename gotomap (f Nopop restTokens done theParse)
+                    Just f -> handleGoto statename gotomap (f (Nopop, restTokens, done, theParse))
 
 -- All reduce states are of this form
 reduceConstructor :: String -> ([Token] -> Production) -> StateFn
-reduceConstructor _ _ (End res) tokens done theParse = (End res, tokens, done, theParse)
-reduceConstructor statename prodmap _ tokens done theParse =
+reduceConstructor _ _ (End res, tokens, done, theParse) = (End res, tokens, done, theParse)
+reduceConstructor statename prodmap (_, tokens, done, theParse) =
     let prod@(src, dest) = prodmap done in
     printStateStart statename tokens (Pop (length dest - 1) src, tokens, done, prod : theParse)
 
@@ -103,7 +105,7 @@ state1 :: StateFn
 state1 = shiftConstructor "1"
     (\case
         TPlus -> Just state5
-        TEnd  -> Just (\_ tokens done theParse -> (End Accept, tokens, done, theParse))  -- Function that tells shiftConstructor to accept
+        TEnd  -> Just (\(_, tokens, done, theParse) -> (End Accept, tokens, done, theParse))  -- Function that tells shiftConstructor to accept
         _ -> Nothing)
     (const Nothing)
 
